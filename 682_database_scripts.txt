@@ -1,0 +1,156 @@
+CREATE SCHEMA IF NOT EXISTS ONLINE_RETAIL;
+
+CREATE TABLE IF NOT EXISTS ONLINE_RETAIL.product_info
+(
+    product_id integer NOT NULL,
+    product_type text  NOT NULL,
+    product_name text  NOT NULL,
+	product_desc text  NOT NULL,
+	product_keywords text  NOT NULL,
+    product_image bytea,
+	product_price numeric,
+    PRIMARY KEY (product_id)
+);
+
+CREATE TABLE IF NOT EXISTS ONLINE_RETAIL.inventory_info
+(
+    product_id INTEGER NOT NULL, 
+    product_quantity INTEGER NOT NULL CHECK (product_quantity >= 0), 
+    PRIMARY KEY (product_id),
+    CONSTRAINT fk_product FOREIGN KEY (product_id)
+        REFERENCES ONLINE_RETAIL.product_info (product_id)
+);
+
+
+CREATE TABLE IF NOT EXISTS ONLINE_RETAIL.cart_info
+(   
+    product_id INTEGER PRIMARY KEY, 
+    user_id TEXT NOT NULL,
+    product_name TEXT NOT NULL, 
+    quantity INTEGER NOT NULL, 
+    product_price NUMERIC NOT NULL,
+    insert_ts TIMESTAMP DEFAULT CURRENT_TIMESTAMP, 
+
+    CONSTRAINT fk_product FOREIGN KEY (product_id)
+        REFERENCES ONLINE_RETAIL.product_info (product_id)
+);
+
+CREATE TABLE IF NOT EXISTS ONLINE_RETAIL.cart_info_stg
+(   
+    product_id INTEGER PRIMARY KEY, 
+    user_id TEXT NOT NULL,
+    product_name TEXT NOT NULL, 
+    quantity INTEGER NOT NULL, 
+    product_price NUMERIC NOT NULL,
+    insert_ts TIMESTAMP DEFAULT CURRENT_TIMESTAMP, 
+
+    CONSTRAINT fk_product FOREIGN KEY (product_id)
+        REFERENCES ONLINE_RETAIL.product_info (product_id)
+);
+
+-- Cart Management function
+CREATE OR REPLACE FUNCTION ONLINE_RETAIL.merge_and_truncate_cart_info()
+RETURNS VOID AS $$
+BEGIN
+    -- Perform the MERGE operation
+    MERGE INTO ONLINE_RETAIL.cart_info AS target
+    USING ONLINE_RETAIL.cart_info_stg AS source
+    ON target.product_id = source.product_id
+    WHEN MATCHED THEN
+        UPDATE SET 
+            user_id = source.user_id,
+            product_name = source.product_name,
+            quantity = source.quantity,
+            product_price = source.product_price,
+            insert_ts = source.insert_ts
+    WHEN NOT MATCHED THEN
+        INSERT (product_id, user_id, product_name, quantity, product_price, insert_ts)
+        VALUES (source.product_id, source.user_id, source.product_name, source.quantity, source.product_price, source.insert_ts);
+
+    -- Truncate the staging table after the merge
+    TRUNCATE TABLE ONLINE_RETAIL.cart_info_stg;
+END;
+$$ LANGUAGE plpgsql;
+
+
+-- Get curren user roles
+CREATE OR REPLACE FUNCTION ONLINE_RETAIL.get_current_user_roles()
+RETURNS TEXT -- Return type is a single text value
+LANGUAGE sql
+AS $$
+    SELECT r.rolname
+    FROM pg_roles r
+    JOIN pg_auth_members m ON r.oid = m.roleid
+    JOIN pg_roles u ON m.member = u.oid
+    WHERE u.rolname = CURRENT_USER;
+$$;
+
+
+-- Create roles
+CREATE ROLE customer_role;
+CREATE ROLE retailer_role;
+CREATE ROLE manager_role;
+CREATE ROLE administrator_role;
+
+GRANT USAGE ON SCHEMA ONLINE_RETAIL TO customer_role;
+GRANT USAGE ON SCHEMA ONLINE_RETAIL TO retailer_role;
+GRANT USAGE ON SCHEMA ONLINE_RETAIL TO manager_role;
+GRANT USAGE ON SCHEMA ONLINE_RETAIL TO administrator_role;
+
+
+
+GRANT SELECT ON TABLE ONLINE_RETAIL.product_info TO customer_role;
+GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE ONLINE_RETAIL.product_info TO retailer_role; -- DML added
+GRANT SELECT ON TABLE ONLINE_RETAIL.product_info TO manager_role;
+
+GRANT SELECT ON TABLE ONLINE_RETAIL.inventory_info TO customer_role;
+GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE ONLINE_RETAIL.inventory_info TO retailer_role; -- DML added
+GRANT SELECT ON TABLE ONLINE_RETAIL.inventory_info TO manager_role;
+
+GRANT SELECT, INSERT, DELETE, UPDATE ON TABLE ONLINE_RETAIL.cart_info TO customer_role;
+GRANT SELECT ON TABLE ONLINE_RETAIL.cart_info TO manager_role;
+GRANT SELECT, INSERT, DELETE, UPDATE, TRUNCATE ON TABLE ONLINE_RETAIL.cart_info_stg TO customer_role;
+
+
+
+
+
+
+-- Create users with the password 'postgres'
+CREATE USER customer_1 WITH PASSWORD 'postgres';
+CREATE USER retailer_1 WITH PASSWORD 'postgres';
+CREATE USER manager_1 WITH PASSWORD 'postgres';
+CREATE USER administrator_1 WITH PASSWORD 'postgres';
+
+-- Grant roles to the respective users
+GRANT customer_role TO customer_1;
+GRANT retailer_role TO retailer_1;
+GRANT manager_role TO manager_1;
+GRANT administrator_role TO administrator_1;
+
+
+
+
+GRANT EXECUTE ON FUNCTION ONLINE_RETAIL.get_current_user_roles() TO customer_role;
+GRANT EXECUTE ON FUNCTION ONLINE_RETAIL.get_current_user_roles() TO retailer_role;
+GRANT EXECUTE ON FUNCTION ONLINE_RETAIL.get_current_user_roles() TO manager_role;
+GRANT EXECUTE ON FUNCTION ONLINE_RETAIL.get_current_user_roles() TO administrator_role;
+
+
+GRANT EXECUTE ON FUNCTION ONLINE_RETAIL.merge_and_truncate_cart_info() TO customer_role;
+
+
+
+=========================
+-- Product Insert scripts
+
+python Product_Insert_script.py
+
+==========================
+-- Inventory Insert script default to 100 quantity initially
+
+INSERT INTO ONLINE_RETAIL.inventory_info (product_id, product_quantity)
+SELECT product_id, 100
+FROM ONLINE_RETAIL.product_info;
+
+===========================
